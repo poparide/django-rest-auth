@@ -10,6 +10,7 @@ from allauth.socialaccount.helpers import complete_social_login
 from allauth.socialaccount.models import SocialAccount
 from allauth.socialaccount.providers.base import AuthProcess
 from allauth.socialaccount.providers.oauth2.client import OAuth2Error
+from allauth.account.models import EmailAddress
 
 from rest_framework import serializers
 from requests.exceptions import HTTPError
@@ -117,6 +118,7 @@ class SocialLoginSerializer(serializers.Serializer):
 
         try:
             login = self.get_social_login(adapter, app, social_token, access_token)
+            self.check_for_claimable_mismatch(login)
             complete_social_login(request, login)
         except (HTTPError, OAuth2Error):
             raise serializers.ValidationError(_("Incorrect value"))
@@ -142,6 +144,37 @@ class SocialLoginSerializer(serializers.Serializer):
         attrs['user'] = login.account.user
 
         return attrs
+
+    def check_for_claimable_mismatch(self, login):
+        # 1. Extract the incoming email from the social login
+        incoming_email = login.account.extra_data.get("email", "").lower()
+        unverified_email = (
+            EmailAddress.objects
+            .filter(email__iexact=incoming_email, verified=False, user__claimable=True)
+            .select_related("user")
+            .first()
+        )
+        if unverified_email:
+            local_user = unverified_email.user
+            # 3. Check if this user has any verified EmailAddress (other than the incoming)
+            has_verified = EmailAddress.objects.filter(
+                user=local_user,
+                verified=True
+            ).exclude(email__iexact=incoming_email).exists()
+            # 4. Check if this user has any unverified EmailAddress (besides the incoming one)
+            has_unverified = EmailAddress.objects.filter(
+                user=local_user,
+                verified=False
+            ).exists()
+            # 5. If both are true, block:
+            if has_verified and has_unverified:
+                local_user.claimable = False
+                local_user.save()
+                raise serializers.ValidationError({
+                    "non_field_errors": [
+                        "Cannot claim account: verified email already exists."
+                    ]
+                })
 
 
 class SocialConnectMixin(object):

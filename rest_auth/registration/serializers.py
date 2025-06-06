@@ -9,6 +9,7 @@ from allauth.account.utils import setup_user_email
 from allauth.socialaccount.helpers import complete_social_login
 from allauth.socialaccount.models import SocialAccount
 from allauth.socialaccount.providers.base import AuthProcess
+from allauth.socialaccount.providers.oauth2.client import OAuth2Error
 
 from rest_framework import serializers
 from requests.exceptions import HTTPError
@@ -117,7 +118,7 @@ class SocialLoginSerializer(serializers.Serializer):
         try:
             login = self.get_social_login(adapter, app, social_token, access_token)
             complete_social_login(request, login)
-        except HTTPError:
+        except (HTTPError, OAuth2Error):
             raise serializers.ValidationError(_("Incorrect value"))
 
         if not login.is_existing:

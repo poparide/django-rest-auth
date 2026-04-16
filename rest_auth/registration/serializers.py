@@ -158,17 +158,8 @@ class SocialLoginSerializer(serializers.Serializer):
         return attrs
 
     def check_for_claimable_mismatch(self, login):
-        # 1. Extract the incoming email safely across ALL providers (Apple, FB, Google)
-        if login.email_addresses:
-            incoming_email = login.email_addresses[0].email.lower()
-        elif login.user and login.user.email:
-            incoming_email = login.user.email.lower()
-        else:
-            incoming_email = login.account.extra_data.get("email", "").lower()
-
-        if not incoming_email:
-            return  # Nothing to check if we have no email
-
+        # 1. Extract the incoming email from the social login
+        incoming_email = login.account.extra_data.get("email", "").lower()
         unverified_email = (
             EmailAddress.objects
             .filter(email__iexact=incoming_email, verified=False, user__claimable=True)

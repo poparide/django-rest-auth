@@ -1,16 +1,18 @@
 from django.http import HttpRequest
 from django.utils.translation import ugettext_lazy as _
 from django.contrib.auth import get_user_model
+from django.contrib.sites.models import Site
 
 try:
     from allauth.account import app_settings as allauth_settings
-    from allauth.utils import (email_address_exists,
-                               get_username_max_length)
+    from allauth.utils import get_username_max_length
     from allauth.account.adapter import get_adapter
     from allauth.account.utils import setup_user_email
     from allauth.socialaccount.helpers import complete_social_login
-    from allauth.socialaccount.models import SocialAccount
+    from allauth.socialaccount.models import SocialAccount, SocialApp
     from allauth.socialaccount.providers.base import AuthProcess
+    from allauth.socialaccount.providers.oauth2.client import OAuth2Error
+    from allauth.account.models import EmailAddress
 except ImportError:
     raise ImportError("allauth needs to be added to INSTALLED_APPS.")
 
@@ -72,7 +74,15 @@ class SocialLoginSerializer(serializers.Serializer):
             raise serializers.ValidationError(_("Define adapter_class in view"))
 
         adapter = adapter_class(request)
-        app = adapter.get_provider().get_app(request)
+        # The get_app method is not available anymore on social adapters
+        provider = adapter.get_provider()
+        site = Site.objects.get_current(request)
+        try:
+            app = SocialApp.objects.get(provider=provider.id, sites=site)
+        except SocialApp.DoesNotExist:
+            raise serializers.ValidationError(
+                _(f"No SocialApp configured for provider '{provider.id}' on this site.")
+            )
 
         # More info on code vs access_token
         # http://stackoverflow.com/questions/8666316/facebook-oauth-2-0-code-and-token
@@ -121,7 +131,7 @@ class SocialLoginSerializer(serializers.Serializer):
         try:
             login = self.get_social_login(adapter, app, social_token, access_token)
             complete_social_login(request, login)
-        except HTTPError:
+        except (HTTPError, OAuth2Error):
             raise serializers.ValidationError(_("Incorrect value"))
 
         if not login.is_existing:
@@ -180,7 +190,10 @@ class RegisterSerializer(serializers.Serializer):
     def validate_email(self, email):
         email = get_adapter().clean_email(email)
         if allauth_settings.UNIQUE_EMAIL:
-            if email and email_address_exists(email):
+            if (
+                EmailAddress.objects.filter(email__iexact=email).exists()
+                or get_user_model().objects.filter(email__iexact=email).exists()
+            ):
                 raise serializers.ValidationError(
                     _("A user is already registered with this e-mail address."))
         return email

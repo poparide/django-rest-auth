@@ -133,7 +133,15 @@ class SocialLoginSerializer(serializers.Serializer):
                 _("Incorrect input. access_token or code is required."))
 
         social_token = adapter.parse_token({'access_token': access_token})
-        social_token.app = app
+        # Only attach the SocialApp to the token when it actually exists in
+        # the database. Apps configured purely via SOCIALACCOUNT_PROVIDERS
+        # settings have no PK, and SocialToken.app is a nullable FK -- if we
+        # assigned the unsaved instance, Django would refuse to save the token
+        # downstream with "save() prohibited to prevent data loss due to
+        # unsaved related object 'app'". This mirrors the conditional in
+        # allauth's own OAuth2CallbackView.dispatch().
+        if app.pk:
+            social_token.app = app
 
         try:
             login = self.get_social_login(adapter, app, social_token, access_token)

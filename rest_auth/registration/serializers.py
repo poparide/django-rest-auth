@@ -1,13 +1,13 @@
 from django.http import HttpRequest
 from django.utils.translation import gettext_lazy as _
 from django.contrib.auth import get_user_model
-from django.contrib.sites.models import Site
 
 try:
     from allauth.account import app_settings as allauth_settings
     from allauth.utils import get_username_max_length
     from allauth.account.adapter import get_adapter
     from allauth.account.utils import setup_user_email
+    from allauth.socialaccount.adapter import get_adapter as get_social_adapter
     from allauth.socialaccount.helpers import complete_social_login
     from allauth.socialaccount.models import SocialAccount, SocialApp
     from allauth.socialaccount.providers.base import AuthProcess
@@ -74,14 +74,21 @@ class SocialLoginSerializer(serializers.Serializer):
             raise serializers.ValidationError(_("Define adapter_class in view"))
 
         adapter = adapter_class(request)
-        # The get_app method is not available anymore on social adapters
-        provider = adapter.get_provider()
-        site = Site.objects.get_current(request)
+        # Resolve the provider and its SocialApp via allauth's social adapter
+        # so that apps configured through SOCIALACCOUNT_PROVIDERS[<provider>]["APP"]
+        # in settings are honored alongside DB-backed SocialApp rows. This lets
+        # downstream projects keep OAuth client secrets out of the database
+        # (e.g. sourced from a secrets manager) while preserving backwards
+        # compatibility with the legacy SocialApp-per-site setup.
+        # Note: in allauth >= 0.52, adapter.get_provider() itself raises
+        # SocialApp.DoesNotExist when no app is configured, so both calls
+        # need to live inside the try block.
         try:
-            app = SocialApp.objects.get(provider=provider.id, sites=site)
+            provider = adapter.get_provider()
+            app = get_social_adapter(request).get_app(request, provider=provider.id)
         except SocialApp.DoesNotExist:
             raise serializers.ValidationError(
-                _(f"No SocialApp configured for provider '{provider.id}' on this site.")
+                _(f"No SocialApp configured for provider '{adapter.provider_id}'.")
             )
 
         # More info on code vs access_token
@@ -126,7 +133,15 @@ class SocialLoginSerializer(serializers.Serializer):
                 _("Incorrect input. access_token or code is required."))
 
         social_token = adapter.parse_token({'access_token': access_token})
-        social_token.app = app
+        # Only attach the SocialApp to the token when it actually exists in
+        # the database. Apps configured purely via SOCIALACCOUNT_PROVIDERS
+        # settings have no PK, and SocialToken.app is a nullable FK -- if we
+        # assigned the unsaved instance, Django would refuse to save the token
+        # downstream with "save() prohibited to prevent data loss due to
+        # unsaved related object 'app'". This mirrors the conditional in
+        # allauth's own OAuth2CallbackView.dispatch().
+        if app.pk:
+            social_token.app = app
 
         try:
             login = self.get_social_login(adapter, app, social_token, access_token)
